@@ -48,6 +48,8 @@
 #include "wine/hid.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(dinput);
+WINE_DECLARE_DEBUG_CHANNEL(ffbrate);
+WINE_DECLARE_DEBUG_CHANNEL(ffbrate_dryrun);
 
 DEFINE_GUID( GUID_DEVINTERFACE_WINEXINPUT,0x6c53d5fd,0x6480,0x440f,0xb6,0x18,0x47,0x67,0x50,0xc5,0xe1,0xa6 );
 DEFINE_GUID( hid_joystick_guid, 0x9e573edb, 0x7734, 0x11d2, 0x8d, 0x4a, 0x23, 0x90, 0x3f, 0xb6, 0xbd, 0xf7 );
@@ -2895,6 +2897,10 @@ static HRESULT WINAPI hid_joystick_effect_Download( IDirectInputEffect *iface )
 
     if (hr == DI_OK)
     {
+        static ULONG cmdrate = 0;
+        static ULONGLONG t0 = 0, t1;
+        DWORD modif = impl->modified;
+
         switch (impl->type)
         {
         case PID_USAGE_ET_SQUARE:
@@ -2913,7 +2919,7 @@ static HRESULT WINAPI hid_joystick_effect_Download( IDirectInputEffect *iface )
             set_parameter_value( impl, impl->type_specific_buf, set_periodic->offset_caps,
                                  impl->periodic.lOffset );
 
-            if (!WriteFile( device, impl->type_specific_buf, report_len, NULL, NULL )) hr = DIERR_INPUTLOST;
+            if (!TRACE_ON(ffbrate_dryrun) && !WriteFile( device, impl->type_specific_buf, report_len, NULL, NULL )) hr = DIERR_INPUTLOST;
             else impl->modified &= ~DIEP_TYPESPECIFICPARAMS;
             break;
         case PID_USAGE_ET_SPRING:
@@ -2941,7 +2947,7 @@ static HRESULT WINAPI hid_joystick_effect_Download( IDirectInputEffect *iface )
                 set_parameter_value( impl, impl->type_specific_buf, set_condition->dead_band_caps,
                                      impl->condition[i].lDeadBand );
 
-                if (!WriteFile( device, impl->type_specific_buf, report_len, NULL, NULL )) hr = DIERR_INPUTLOST;
+                if (!TRACE_ON(ffbrate_dryrun) && !WriteFile( device, impl->type_specific_buf, report_len, NULL, NULL )) hr = DIERR_INPUTLOST;
                 else impl->modified &= ~DIEP_TYPESPECIFICPARAMS;
             }
             break;
@@ -2951,7 +2957,7 @@ static HRESULT WINAPI hid_joystick_effect_Download( IDirectInputEffect *iface )
             set_parameter_value( impl, impl->type_specific_buf, set_constant_force->magnitude_caps,
                                  impl->constant_force.lMagnitude );
 
-            if (!WriteFile( device, impl->type_specific_buf, report_len, NULL, NULL )) hr = DIERR_INPUTLOST;
+            if (!TRACE_ON(ffbrate_dryrun) && !WriteFile( device, impl->type_specific_buf, report_len, NULL, NULL )) hr = DIERR_INPUTLOST;
             else impl->modified &= ~DIEP_TYPESPECIFICPARAMS;
             break;
         case PID_USAGE_ET_RAMP:
@@ -2962,9 +2968,22 @@ static HRESULT WINAPI hid_joystick_effect_Download( IDirectInputEffect *iface )
             set_parameter_value( impl, impl->type_specific_buf, set_ramp_force->end_caps,
                                  impl->ramp_force.lEnd );
 
-            if (!WriteFile( device, impl->type_specific_buf, report_len, NULL, NULL )) hr = DIERR_INPUTLOST;
+            if (!TRACE_ON(ffbrate_dryrun) && !WriteFile( device, impl->type_specific_buf, report_len, NULL, NULL )) hr = DIERR_INPUTLOST;
             else impl->modified &= ~DIEP_TYPESPECIFICPARAMS;
             break;
+        }
+
+        if (TRACE_ON(ffbrate) && hr == DI_OK && (modif & DIEP_TYPESPECIFICPARAMS))
+        {
+            t1 = GetTickCount64();
+            if (t1 < (t0 + (60L * 1000L))) cmdrate++;
+            else
+            {
+                TRACE_(ffbrate)("FFB avg. upload rate for the last minute: %uHZ.\n", cmdrate / 60);
+                TRACE_(ffbrate_dryrun)("Dry run without sending type specific reports to the backend.\n");
+                t0 = t1;
+                cmdrate = 0;
+            }
         }
     }
 
