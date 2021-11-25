@@ -479,74 +479,76 @@ static void process_hid_report(DEVICE_OBJECT *device, BYTE *report_buf, DWORD re
     struct hid_report *report, *last_report;
     IRP *irp;
 
-    if (!(report = RtlAllocateHeap(GetProcessHeap(), 0, size))) return;
-    memcpy(report->buffer, report_buf, report_len);
-    report->length = report_len;
-
-    if (ext->report_fixups & HIDRAW_FIXUP_DUALSHOCK_BT)
-    {
-        /* As described in the Linux kernel driver, when connected over bluetooth, DS4 controllers
-         * start sending input through report #17 as soon as they receive a feature report #2, which
-         * the kernel sends anyway for calibration.
-         *
-         * Input report #17 is the same as the default input report #1, with additional gyro data and
-         * two additional bytes in front, but is only described as vendor specific in the report descriptor,
-         * and applications aren't expecting it.
-         *
-         * We have to translate it to input report #1, like native driver does.
-         */
-        if (report->buffer[0] == 0x11 && report->length >= 12)
-        {
-            memmove(report->buffer, report->buffer + 2, 10);
-            report->buffer[0] = 1; /* fake report #1 */
-            report->length = 10;
-        }
-    }
-
-    if (ext->report_fixups & HIDRAW_FIXUP_DUALSENSE_BT)
-    {
-        /* The behavior of DualSense is very similar to DS4 described above with a few exceptions.
-         *
-         * The report number #41 is used for the extended bluetooth input report. The report comes
-         * with only one extra byte in front and the format is not exactly the same as the one used
-         * for the report #1 so we need to shuffle a few bytes around.
-         *
-         * Basic #1 report:
-         *   X  Y  Z  RZ  Buttons[3]  TriggerLeft  TriggerRight
-         *
-         * Extended #41 report:
-         *   Prefix X  Y  Z  Rz  TriggerLeft  TriggerRight  Counter  Buttons[3] ...
-         */
-        if (report->buffer[0] == 0x31 && report->length >= 11)
-        {
-            BYTE trigger[2];
-
-            memmove(report->buffer, report->buffer + 1, 10);
-            report->buffer[0] = 1; /* fake report #1 */
-            report->length = 10;
-
-            trigger[0] = report->buffer[5]; /* TriggerLeft*/
-            trigger[1] = report->buffer[6]; /* TriggerRight */
-
-            report->buffer[5] = report->buffer[8];  /* Buttons[0] */
-            report->buffer[6] = report->buffer[9];  /* Buttons[1] */
-            report->buffer[7] = report->buffer[10]; /* Buttons[2] */
-            report->buffer[8] = trigger[0]; /* TriggerLeft */
-            report->buffer[9] = trigger[1]; /* TirggerRight */
-        }
-    }
-
     RtlEnterCriticalSection(&ext->cs);
-    list_add_tail(&ext->reports, &report->entry);
-
-    if (!ext->collection_desc.ReportIDs[0].ReportID) last_report = ext->last_reports[0];
-    else last_report = ext->last_reports[report_buf[0]];
-    memcpy(last_report->buffer, report_buf, report_len);
-
-    if ((irp = pop_pending_read(ext)))
+    if (ext->collection_desc.ReportIDsLength && (report = RtlAllocateHeap(GetProcessHeap(), 0, size)))
     {
-        deliver_next_report(ext, irp);
-        IoCompleteRequest(irp, IO_NO_INCREMENT);
+        memcpy(report->buffer, report_buf, report_len);
+        report->length = report_len;
+
+        if (ext->report_fixups & HIDRAW_FIXUP_DUALSHOCK_BT)
+        {
+            /* As described in the Linux kernel driver, when connected over bluetooth, DS4 controllers
+             * start sending input through report #17 as soon as they receive a feature report #2, which
+             * the kernel sends anyway for calibration.
+             *
+             * Input report #17 is the same as the default input report #1, with additional gyro data and
+             * two additional bytes in front, but is only described as vendor specific in the report descriptor,
+             * and applications aren't expecting it.
+             *
+             * We have to translate it to input report #1, like native driver does.
+             */
+            if (report->buffer[0] == 0x11 && report->length >= 12)
+            {
+                memmove(report->buffer, report->buffer + 2, 10);
+                report->buffer[0] = 1; /* fake report #1 */
+                report->length = 10;
+            }
+        }
+
+        if (ext->report_fixups & HIDRAW_FIXUP_DUALSENSE_BT)
+        {
+            /* The behavior of DualSense is very similar to DS4 described above with a few exceptions.
+             *
+             * The report number #41 is used for the extended bluetooth input report. The report comes
+             * with only one extra byte in front and the format is not exactly the same as the one used
+             * for the report #1 so we need to shuffle a few bytes around.
+             *
+             * Basic #1 report:
+             *   X  Y  Z  RZ  Buttons[3]  TriggerLeft  TriggerRight
+             *
+             * Extended #41 report:
+             *   Prefix X  Y  Z  Rz  TriggerLeft  TriggerRight  Counter  Buttons[3] ...
+             */
+            if (report->buffer[0] == 0x31 && report->length >= 11)
+            {
+                BYTE trigger[2];
+
+                memmove(report->buffer, report->buffer + 1, 10);
+                report->buffer[0] = 1; /* fake report #1 */
+                report->length = 10;
+
+                trigger[0] = report->buffer[5]; /* TriggerLeft*/
+                trigger[1] = report->buffer[6]; /* TriggerRight */
+
+                report->buffer[5] = report->buffer[8];  /* Buttons[0] */
+                report->buffer[6] = report->buffer[9];  /* Buttons[1] */
+                report->buffer[7] = report->buffer[10]; /* Buttons[2] */
+                report->buffer[8] = trigger[0]; /* TriggerLeft */
+                report->buffer[9] = trigger[1]; /* TirggerRight */
+            }
+        }
+
+        list_add_tail(&ext->reports, &report->entry);
+
+        if (!ext->collection_desc.ReportIDs[0].ReportID) last_report = ext->last_reports[0];
+        else last_report = ext->last_reports[report_buf[0]];
+        memcpy(last_report->buffer, report_buf, report_len);
+
+        if ((irp = pop_pending_read(ext)))
+        {
+            deliver_next_report(ext, irp);
+            IoCompleteRequest(irp, IO_NO_INCREMENT);
+        }
     }
     RtlLeaveCriticalSection(&ext->cs);
 }
