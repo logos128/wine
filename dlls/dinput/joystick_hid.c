@@ -2910,6 +2910,9 @@ static HRESULT WINAPI hid_joystick_effect_Download( IDirectInputEffect *iface )
         case PID_USAGE_ET_SAWTOOTH_DOWN:
             if (!(impl->modified & DIEP_TYPESPECIFICPARAMS)) break;
 
+            TRACE( "Periodic [id: %lu dwMagnitude: %lu dwPeriod: %lu dwPhase: %lu lOffset: %ld]\n",
+                   impl->index, impl->periodic.dwMagnitude, impl->periodic.dwPeriod, impl->periodic.dwPhase, impl->periodic.lOffset );
+
             set_parameter_value( impl, impl->type_specific_buf, set_periodic->magnitude_caps,
                                  impl->periodic.dwMagnitude );
             set_parameter_value_us( impl, impl->type_specific_buf, set_periodic->period_caps,
@@ -2928,8 +2931,14 @@ static HRESULT WINAPI hid_joystick_effect_Download( IDirectInputEffect *iface )
         case PID_USAGE_ET_FRICTION:
             if (!(impl->modified & DIEP_TYPESPECIFICPARAMS)) break;
 
+            TRACE( "Condition [id: %lu count: %lu]\n", impl->index, impl->params.cbTypeSpecificParams / sizeof(DICONDITION) );
+
             for (i = 0; i < impl->params.cbTypeSpecificParams / sizeof(DICONDITION); ++i)
             {
+                TRACE( "Condition[%lu] [lOffset: %ld lPositiveCoefficient: %ld lNegativeCoefficient: %ld dwPositiveSaturation: %lu dwNegativeSaturation: %lu lDeadBand: %ld]\n",
+                       i, impl->condition[i].lOffset, impl->condition[i].lPositiveCoefficient, impl->condition[i].lNegativeCoefficient,
+                       impl->condition[i].dwPositiveSaturation, impl->condition[i].dwNegativeSaturation, impl->condition[i].lDeadBand );
+
                 status = HidP_SetUsageValue( HidP_Output, HID_USAGE_PAGE_PID, 0, PID_USAGE_PARAMETER_BLOCK_OFFSET,
                                              i, impl->joystick->preparsed, impl->type_specific_buf, report_len );
                 if (status != HIDP_STATUS_SUCCESS) WARN( "HidP_SetUsageValue %04x:%04x returned %#lx\n",
@@ -2954,6 +2963,8 @@ static HRESULT WINAPI hid_joystick_effect_Download( IDirectInputEffect *iface )
         case PID_USAGE_ET_CONSTANT_FORCE:
             if (!(impl->modified & DIEP_TYPESPECIFICPARAMS)) break;
 
+            TRACE( "Constant [id: %lu lMagnitude: %ld]\n", impl->index, impl->constant_force.lMagnitude );
+
             set_parameter_value( impl, impl->type_specific_buf, set_constant_force->magnitude_caps,
                                  impl->constant_force.lMagnitude );
 
@@ -2962,6 +2973,8 @@ static HRESULT WINAPI hid_joystick_effect_Download( IDirectInputEffect *iface )
             break;
         case PID_USAGE_ET_RAMP:
             if (!(impl->modified & DIEP_TYPESPECIFICPARAMS)) break;
+
+            TRACE( "Ramp [id: %lu lStart: %ld lEnd: %ld]\n", impl->index, impl->ramp_force.lStart, impl->ramp_force.lEnd );
 
             set_parameter_value( impl, impl->type_specific_buf, set_ramp_force->start_caps,
                                  impl->ramp_force.lStart );
@@ -3001,6 +3014,9 @@ static HRESULT WINAPI hid_joystick_effect_Download( IDirectInputEffect *iface )
             if (!(impl->flags & DIEP_ENVELOPE)) break;
             if (!(impl->modified & DIEP_ENVELOPE)) break;
 
+            TRACE( "Envelope [id: %lu dwAttackLevel: %lu dwAttackTime: %lu dwFadeLevel: %lu dwFadeTime: %lu]\n",
+                   impl->index, impl->envelope.dwAttackLevel, impl->envelope.dwAttackTime, impl->envelope.dwFadeLevel, impl->envelope.dwFadeTime );
+
             set_parameter_value( impl, impl->set_envelope_buf, set_envelope->attack_level_caps,
                                  impl->envelope.dwAttackLevel );
             set_parameter_value_us( impl, impl->set_envelope_buf, set_envelope->attack_time_caps,
@@ -3018,6 +3034,10 @@ static HRESULT WINAPI hid_joystick_effect_Download( IDirectInputEffect *iface )
 
     if (hr == DI_OK && impl->modified)
     {
+        TRACE( "[id: %lu dwDuration: %lu dwGain: %lu dwSamplePeriod: %lu dwStartDelay: %lu dwTriggerRepeatInterval: %lu dwTriggerButton: %lu]\n",
+               impl->index, impl->params.dwDuration, impl->params.dwGain, impl->params.dwSamplePeriod, impl->params.dwStartDelay,
+               impl->params.dwTriggerRepeatInterval, impl->params.dwTriggerButton );
+
         set_parameter_value_us( impl, impl->effect_update_buf, effect_update->duration_caps,
                                 impl->params.dwDuration );
         set_parameter_value( impl, impl->effect_update_buf, effect_update->gain_caps,
@@ -3045,6 +3065,8 @@ static HRESULT WINAPI hid_joystick_effect_Download( IDirectInputEffect *iface )
             WARN( "neither X or Y axes are selected, skipping direction\n" );
         else for (i = 0; i < min( effect_update->direction_count, spherical.cAxes ); ++i)
         {
+            TRACE( "rglDirection[%lu]: %ld\n", i, directions[i] );
+
             tmp = directions[i] + (i == 0 ? 9000 : 0);
             caps = effect_update->direction_caps[effect_update->direction_count - i - 1];
             set_parameter_value_angle( impl, impl->effect_update_buf, caps, tmp % 36000 );
