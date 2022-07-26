@@ -2904,7 +2904,11 @@ static HRESULT WINAPI hid_joystick_effect_Download( IDirectInputEffect *iface )
         status = HidP_SetUsageValue( HidP_Output, HID_USAGE_PAGE_PID, 0, PID_USAGE_EFFECT_BLOCK_INDEX,
                                      impl->index, impl->joystick->preparsed, impl->effect_update_buf, report_len );
         if (status != HIDP_STATUS_SUCCESS) hr = status;
-        else hr = DI_OK;
+        else
+        {
+            hr = DI_OK;
+            impl->modified |= impl->flags & ~DIEP_ENVELOPE;
+        }
     }
 
     if (hr == DI_OK)
