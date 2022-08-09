@@ -4879,19 +4879,18 @@ static void test_windows_gaming_input(void)
                 COLLECTION(1, Logical),
                     USAGE(4, (HID_USAGE_PAGE_GENERIC << 16)|HID_USAGE_GENERIC_X),
                     USAGE(4, (HID_USAGE_PAGE_GENERIC << 16)|HID_USAGE_GENERIC_Y),
-                    USAGE(4, (HID_USAGE_PAGE_GENERIC << 16)|HID_USAGE_GENERIC_Z),
                     LOGICAL_MINIMUM(1, 0),
                     LOGICAL_MAXIMUM(1, 1),
                     PHYSICAL_MINIMUM(1, 0),
                     PHYSICAL_MAXIMUM(1, 1),
                     REPORT_SIZE(1, 1),
-                    REPORT_COUNT(1, 3),
+                    REPORT_COUNT(1, 2),
                     OUTPUT(1, Data|Var|Abs),
                 END_COLLECTION,
                 USAGE(1, PID_USAGE_DIRECTION_ENABLE),
                 REPORT_COUNT(1, 1),
                 OUTPUT(1, Data|Var|Abs),
-                REPORT_COUNT(1, 4),
+                REPORT_COUNT(1, 5),
                 OUTPUT(1, Cnst|Var|Abs),
 
                 USAGE(1, PID_USAGE_DURATION),
@@ -5478,7 +5477,7 @@ static void test_windows_gaming_input(void)
             .code = IOCTL_HID_WRITE_REPORT,
             .report_id = 3,
             .report_len = 18,
-            .report_buf = {3,0x01,0x02,0x08,0x78,0x00,0x00,0x00,0x00,0x00,0x0a,0x00,0xff,0xff,0x4e,0x01,0x00,0x00},
+            .report_buf = {3,0x01,0x02,0x04,0x78,0x00,0x00,0x00,0x00,0x00,0x0a,0x00,0xff,0xff,0x4e,0x01,0x00,0x00},
         },
     };
     struct hid_expect expect_create_condition[] =
@@ -5509,7 +5508,7 @@ static void test_windows_gaming_input(void)
             .code = IOCTL_HID_WRITE_REPORT,
             .report_id = 3,
             .report_len = 18,
-            .report_buf = {3,0x01,0x03,0x08,0xff,0xff,0x00,0x00,0x00,0x00,0x00,0x00,0xff,0xff,0x99,0x00,0x00,0x00},
+            .report_buf = {3,0x01,0x03,0x04,0xff,0xff,0x00,0x00,0x00,0x00,0x00,0x00,0xff,0xff,0x99,0x00,0x00,0x00},
         },
     };
     struct hid_expect expect_create_constant[] =
@@ -5547,7 +5546,7 @@ static void test_windows_gaming_input(void)
             .code = IOCTL_HID_WRITE_REPORT,
             .report_id = 3,
             .report_len = 18,
-            .report_buf = {3,0x01,0x04,0x08,0x5a,0x00,0x00,0x00,0x00,0x00,0x0a,0x00,0xff,0x7f,0x4e,0x01,0x00,0x00},
+            .report_buf = {3,0x01,0x04,0x04,0x5a,0x00,0x00,0x00,0x00,0x00,0x0a,0x00,0xff,0x7f,0x4e,0x01,0x00,0x00},
         },
     };
     struct hid_expect expect_create_ramp[] =
@@ -5585,7 +5584,7 @@ static void test_windows_gaming_input(void)
             .code = IOCTL_HID_WRITE_REPORT,
             .report_id = 3,
             .report_len = 18,
-            .report_buf = {3,0x01,0x05,0x08,0x5a,0x00,0x00,0x00,0x00,0x00,0x0a,0x00,0xff,0xff,0x4e,0x01,0x00,0x00},
+            .report_buf = {3,0x01,0x05,0x04,0x5a,0x00,0x00,0x00,0x00,0x00,0x0a,0x00,0xff,0xff,0x4e,0x01,0x00,0x00},
         },
     };
     struct hid_expect expect_effect_start =
@@ -5775,7 +5774,7 @@ static void test_windows_gaming_input(void)
     supported_axes = 0xdeadbeef;
     hr = IForceFeedbackMotor_get_SupportedAxes( motor, &supported_axes );
     ok( hr == S_OK, "get_SupportedAxes returned %#lx\n", hr );
-    axes = ForceFeedbackEffectAxes_X | ForceFeedbackEffectAxes_Y | ForceFeedbackEffectAxes_Z;
+    axes = ForceFeedbackEffectAxes_X | ForceFeedbackEffectAxes_Y;
     ok( supported_axes == axes || broken( supported_axes == ForceFeedbackEffectAxes_X ), "got axes %#x\n", supported_axes );
 
     set_hid_expect( file, &expect_pause, sizeof(expect_pause) );
@@ -6079,6 +6078,12 @@ static void test_windows_gaming_input(void)
                                                          delay, duration, duration, duration, 1 );
     ok( hr == S_OK, "SetParametersWithEnvelope returned %#lx\n", hr );
     IPeriodicForceEffect_Release( periodic_effect );
+
+    /* Windows.Gaming.Input always uses the X and Y directions on Windows, */
+    /* ignoring what is declared in the Axes Enable collection at the */
+    /* Set Effects report, or even the existence of the axes in the HID */
+    /* report. It ignores the Z direction, at least on HID PID devices. */
+    /* DirectInput works properly in such cases on Windows. */
 
     set_hid_expect( file, expect_create_periodic, sizeof(expect_create_periodic) );
     hr = IForceFeedbackMotor_LoadEffectAsync( motor, effect, &result_async );
