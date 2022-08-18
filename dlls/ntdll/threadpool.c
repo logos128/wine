@@ -2975,6 +2975,9 @@ VOID WINAPI TpSetTimer( TP_TIMER *timer, LARGE_INTEGER *timeout, LONG period, LO
 
     TRACE( "%p %p %lu %lu\n", timer, timeout, period, window_length );
 
+    /* If the timer has any pending callbacks, cancel them first. */
+    tp_object_cancel( this );
+
     RtlEnterCriticalSection( &timerqueue.cs );
 
     assert( this->u.timer.timer_initialized );
