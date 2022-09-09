@@ -603,7 +603,14 @@ static NTSTATUS sdl_device_physical_effect_control(struct unix_device *iface, BY
         pSDL_HapticStopAll(impl->sdl_haptic);
         /* fallthrough */
     case PID_USAGE_OP_EFFECT_START:
-        pSDL_HapticRunEffect(impl->sdl_haptic, id, (iterations == 0xff ? SDL_HAPTIC_INFINITY : iterations));
+        /* FIXME: Using SDL_HAPTIC_INFINITY here causes an out of bounds kernel
+         * warning in the hid-pidff driver (in case of a pid device).
+         * As SDL_HapticRunEffect sets iterations to INT_MAX, and the driver
+         * passes the value directly to PID_LOOP_COUNT without rescaling,
+         * the hid core logs a warning about assigning a 32-bit value to
+         * an 8-bit field.
+         * May be revised if/when the hid-pidff driver is fixed. */
+        pSDL_HapticRunEffect(impl->sdl_haptic, id, iterations);
         break;
     case PID_USAGE_OP_EFFECT_STOP:
         pSDL_HapticStopEffect(impl->sdl_haptic, id);
