@@ -123,6 +123,14 @@ static inline struct hidraw_device *hidraw_impl_from_unix_device(struct unix_dev
 
 #ifdef HAS_PROPER_INPUT_HEADER
 
+/* This is required by the kernel for all evdev ioctls that use bitfields.
+ * When a 32-bit client calls ioctl, the kernel internally uses the 32-bit ioctl compat handler,
+ * which correctly allocates the bitfields to 32-bit longs.
+ */
+#define BITS_PER_LONG (sizeof(unsigned long) * CHAR_BIT)
+#define BITS_TO_LONGS(bits) (((bits)+BITS_PER_LONG-1)/BITS_PER_LONG)
+#define test_bit(arr,bit) (((unsigned long*)(arr))[(bit)/BITS_PER_LONG]&(1UL<<((bit)&(BITS_PER_LONG-1))))
+
 static const USAGE_AND_PAGE absolute_usages[ABS_CNT] =
 {
     {.UsagePage = HID_USAGE_PAGE_GENERIC,    .Usage = HID_USAGE_GENERIC_X},              /* ABS_X */
@@ -179,10 +187,10 @@ struct lnxev_info
     struct input_id id;
     char name[MAX_PATH];
     char uniq[MAX_PATH];
-    BYTE abs[(ABS_CNT + 7) / 8];
-    BYTE rel[(REL_CNT + 7) / 8];
-    BYTE key[(KEY_CNT + 7) / 8];
-    BYTE ff[(FF_CNT + 7) / 8];
+    unsigned long abs[BITS_TO_LONGS(ABS_CNT)];
+    unsigned long rel[BITS_TO_LONGS(REL_CNT)];
+    unsigned long key[BITS_TO_LONGS(KEY_CNT)];
+    unsigned long ff[BITS_TO_LONGS(FF_CNT)];
 };
 
 struct lnxev_device
@@ -471,8 +479,6 @@ static const struct raw_device_vtbl hidraw_device_vtbl =
 };
 
 #ifdef HAS_PROPER_INPUT_HEADER
-
-#define test_bit(arr,bit) (((BYTE*)(arr))[(bit)>>3]&(1<<((bit)&7)))
 
 static const USAGE_AND_PAGE *what_am_I(struct udev_device *dev, int fd)
 {
