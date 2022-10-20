@@ -453,7 +453,13 @@ static const struct raw_device_vtbl hidraw_device_vtbl =
 
 #ifdef HAS_PROPER_INPUT_HEADER
 
-#define test_bit(arr,bit) (((BYTE*)(arr))[(bit)>>3]&(1<<((bit)&7)))
+/* This is required by the kernel for all evdev ioctls that use bitfields.
+ * When a 32-bit client calls ioctl, the kernel internally uses the 32-bit ioctl compat handler,
+ * which correctly allocates the bitfields to 32-bit longs.
+ */
+#define BITS_PER_LONG (sizeof(unsigned long) * CHAR_BIT)
+#define BITS_TO_LONGS(bits) (((bits)+BITS_PER_LONG-1)/BITS_PER_LONG)
+#define test_bit(arr,bit) (((unsigned long*)(arr))[(bit)/BITS_PER_LONG]&(1UL<<((bit)&(BITS_PER_LONG-1))))
 
 static const USAGE_AND_PAGE *what_am_I(struct udev_device *dev, int fd)
 {
@@ -496,7 +502,7 @@ static INT count_buttons(int device_fd, BYTE *map)
 {
     int i;
     int button_count = 0;
-    BYTE keybits[(KEY_MAX+7)/8];
+    unsigned long keybits[BITS_TO_LONGS(KEY_MAX)];
 
     if (ioctl(device_fd, EVIOCGBIT(EV_KEY, sizeof(keybits)), keybits) == -1)
     {
@@ -517,7 +523,7 @@ static INT count_buttons(int device_fd, BYTE *map)
 
 static INT count_abs_axis(int device_fd)
 {
-    BYTE absbits[(ABS_MAX+7)/8];
+    unsigned long absbits[BITS_TO_LONGS(ABS_MAX)];
     int abs_count = 0;
     int i;
 
@@ -535,9 +541,9 @@ static INT count_abs_axis(int device_fd)
 static NTSTATUS build_report_descriptor(struct unix_device *iface, struct udev_device *dev)
 {
     struct input_absinfo abs_info[ARRAY_SIZE(absolute_usages)];
-    BYTE absbits[(ABS_MAX+7)/8];
-    BYTE relbits[(REL_MAX+7)/8];
-    BYTE ffbits[(FF_MAX+7)/8];
+    unsigned long absbits[BITS_TO_LONGS(ABS_MAX)];
+    unsigned long relbits[BITS_TO_LONGS(REL_MAX)];
+    unsigned long ffbits[BITS_TO_LONGS(FF_MAX)];
     struct ff_effect effect;
     USAGE_AND_PAGE usage;
     USHORT count = 0;
