@@ -60,6 +60,11 @@ struct hid_report
     BYTE buffer[1];
 };
 
+struct device
+{
+    struct device_desc desc;
+};
+
 enum device_state
 {
     DEVICE_STATE_STOPPED,
@@ -72,13 +77,13 @@ enum device_state
 
 struct device_extension
 {
+    struct device base;
+
     struct list entry;
     DEVICE_OBJECT *device;
 
     CRITICAL_SECTION cs;
     enum device_state state;
-
-    struct device_desc desc;
     DWORD index;
 
     BYTE *report_desc;
@@ -166,7 +171,8 @@ static DWORD get_device_index(struct device_desc *desc)
 
     LIST_FOR_EACH_ENTRY(ext, &device_list, struct device_extension, entry)
     {
-        if (ext->desc.vid == desc->vid && ext->desc.pid == desc->pid && ext->desc.input == desc->input)
+        if (ext->base.desc.vid == desc->vid && ext->base.desc.pid == desc->pid &&
+            ext->base.desc.input == desc->input)
             index = max(ext->index + 1, index);
     }
 
@@ -176,13 +182,13 @@ static DWORD get_device_index(struct device_desc *desc)
 static WCHAR *get_instance_id(DEVICE_OBJECT *device)
 {
     struct device_extension *ext = (struct device_extension *)device->DeviceExtension;
-    DWORD len = wcslen(ext->desc.serialnumber) + 33;
+    DWORD len = wcslen(ext->base.desc.serialnumber) + 33;
     WCHAR *dst;
 
     if ((dst = ExAllocatePool(PagedPool, len * sizeof(WCHAR))))
     {
-        swprintf(dst, len, L"%u&%s&%x&%u&%u", ext->desc.version, ext->desc.serialnumber,
-                 ext->desc.uid, ext->index, ext->desc.is_gamepad);
+        swprintf(dst, len, L"%u&%s&%x&%u&%u", ext->base.desc.version, ext->base.desc.serialnumber,
+                 ext->base.desc.uid, ext->index, ext->base.desc.is_gamepad);
     }
 
     return dst;
@@ -196,14 +202,14 @@ static WCHAR *get_device_id(DEVICE_OBJECT *device)
     DWORD pos = 0, len = 0, input_len = 0, winebus_len = 25;
     WCHAR *dst;
 
-    if (ext->desc.input != -1) input_len = 14;
+    if (ext->base.desc.input != -1) input_len = 14;
 
     len += winebus_len + input_len + 1;
 
     if ((dst = ExAllocatePool(PagedPool, len * sizeof(WCHAR))))
     {
-        pos += swprintf(dst + pos, len - pos, winebus_format, ext->desc.vid, ext->desc.pid);
-        if (input_len) pos += swprintf(dst + pos, len - pos, input_format, ext->desc.input);
+        pos += swprintf(dst + pos, len - pos, winebus_format, ext->base.desc.vid, ext->base.desc.pid);
+        if (input_len) pos += swprintf(dst + pos, len - pos, input_format, ext->base.desc.input);
     }
 
     return dst;
@@ -217,14 +223,14 @@ static WCHAR *get_hardware_ids(DEVICE_OBJECT *device)
     DWORD pos = 0, len = 0, input_len = 0, winebus_len = 25;
     WCHAR *dst;
 
-    if (ext->desc.input != -1) input_len = 14;
+    if (ext->base.desc.input != -1) input_len = 14;
 
     len += winebus_len + input_len + 1;
 
     if ((dst = ExAllocatePool(PagedPool, (len + 1) * sizeof(WCHAR))))
     {
-        pos += swprintf(dst + pos, len - pos, winebus_format, ext->desc.vid, ext->desc.pid);
-        if (input_len) pos += swprintf(dst + pos, len - pos, input_format, ext->desc.input);
+        pos += swprintf(dst + pos, len - pos, winebus_format, ext->base.desc.vid, ext->base.desc.pid);
+        if (input_len) pos += swprintf(dst + pos, len - pos, input_format, ext->base.desc.input);
         pos += 1;
         dst[pos] = 0;
     }
@@ -240,11 +246,11 @@ static WCHAR *get_compatible_ids(DEVICE_OBJECT *device)
     DWORD size = sizeof(hid_compat);
     WCHAR *dst;
 
-    if (ext->desc.is_gamepad) size += sizeof(xinput_compat);
+    if (ext->base.desc.is_gamepad) size += sizeof(xinput_compat);
 
     if ((dst = ExAllocatePool(PagedPool, size + sizeof(WCHAR))))
     {
-        if (ext->desc.is_gamepad) memcpy(dst, xinput_compat, sizeof(xinput_compat));
+        if (ext->base.desc.is_gamepad) memcpy(dst, xinput_compat, sizeof(xinput_compat));
         memcpy((char *)dst + size - sizeof(hid_compat), hid_compat, sizeof(hid_compat));
         dst[size / sizeof(WCHAR)] = 0;
     }
@@ -300,8 +306,8 @@ static DEVICE_OBJECT *bus_create_hid_device(struct device_desc *desc, UINT64 uni
 
     /* fill out device_extension struct */
     ext = (struct device_extension *)device->DeviceExtension;
+    ext->base.desc          = *desc;
     ext->device             = device;
-    ext->desc               = *desc;
     ext->index              = get_device_index(desc);
     ext->unix_device        = unix_device;
     list_init(&ext->reports);
@@ -1108,19 +1114,19 @@ static NTSTATUS hid_get_device_string(DEVICE_OBJECT *device, DWORD index, WCHAR 
     switch (index)
     {
     case HID_STRING_ID_IMANUFACTURER:
-        len = (wcslen(ext->desc.manufacturer) + 1) * sizeof(WCHAR);
+        len = (wcslen(ext->base.desc.manufacturer) + 1) * sizeof(WCHAR);
         if (len > buffer_len) return STATUS_BUFFER_TOO_SMALL;
-        else memcpy(buffer, ext->desc.manufacturer, len);
+        else memcpy(buffer, ext->base.desc.manufacturer, len);
         return STATUS_SUCCESS;
     case HID_STRING_ID_IPRODUCT:
-        len = (wcslen(ext->desc.product) + 1) * sizeof(WCHAR);
+        len = (wcslen(ext->base.desc.product) + 1) * sizeof(WCHAR);
         if (len > buffer_len) return STATUS_BUFFER_TOO_SMALL;
-        else memcpy(buffer, ext->desc.product, len);
+        else memcpy(buffer, ext->base.desc.product, len);
         return STATUS_SUCCESS;
     case HID_STRING_ID_ISERIALNUMBER:
-        len = (wcslen(ext->desc.serialnumber) + 1) * sizeof(WCHAR);
+        len = (wcslen(ext->base.desc.serialnumber) + 1) * sizeof(WCHAR);
         if (len > buffer_len) return STATUS_BUFFER_TOO_SMALL;
-        else memcpy(buffer, ext->desc.serialnumber, len);
+        else memcpy(buffer, ext->base.desc.serialnumber, len);
         return STATUS_SUCCESS;
     }
 
@@ -1186,9 +1192,9 @@ static NTSTATUS WINAPI hid_internal_dispatch(DEVICE_OBJECT *device, IRP *irp)
 
             memset(attr, 0, sizeof(*attr));
             attr->Size = sizeof(*attr);
-            attr->VendorID = ext->desc.vid;
-            attr->ProductID = ext->desc.pid;
-            attr->VersionNumber = ext->desc.version;
+            attr->VendorID = ext->base.desc.vid;
+            attr->ProductID = ext->base.desc.pid;
+            attr->VersionNumber = ext->base.desc.version;
 
             irp->IoStatus.Status = STATUS_SUCCESS;
             irp->IoStatus.Information = sizeof(*attr);
