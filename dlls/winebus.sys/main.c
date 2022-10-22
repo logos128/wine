@@ -34,6 +34,8 @@
 #include "ddk/hidport.h"
 #include "ddk/hidtypes.h"
 #include "ddk/hidpddi.h"
+#include "ddk/usb.h"
+#include "ddk/usbioctl.h"
 #include "winreg.h"
 #include "cfgmgr32.h"
 #include "wine/asm.h"
@@ -1521,6 +1523,67 @@ static NTSTATUS WINAPI common_pnp_dispatch(DEVICE_OBJECT *device, IRP *irp)
     return pdo_pnp_dispatch(device, irp);
 }
 
+static NTSTATUS hid_get_indexed_string(DEVICE_OBJECT *device, DWORD index, LANGID langid, WCHAR *buffer, DWORD *buffer_len)
+{
+    struct device_extension *ext = (struct device_extension *)device->DeviceExtension;
+    struct func_device *fdo;
+    IO_STATUS_BLOCK io;
+    KEVENT event;
+    IRP *irp;
+    NTSTATUS status;
+    URB urb = {};
+    struct _URB_CONTROL_DESCRIPTOR_REQUEST *req = &urb.UrbControlDescriptorRequest;
+
+    RtlEnterCriticalSection(&fdo_list_cs);
+    fdo = find_func_device(&ext->base.desc);
+    if (!fdo)
+    {
+        RtlLeaveCriticalSection(&fdo_list_cs);
+        *buffer_len = 0;
+        return STATUS_NOT_SUPPORTED;
+    }
+
+    req->Hdr.Length = sizeof(struct _URB_CONTROL_DESCRIPTOR_REQUEST);
+    req->Hdr.Function = URB_FUNCTION_GET_DESCRIPTOR_FROM_DEVICE;
+    req->TransferBufferLength = 2 + *buffer_len;  /* USB_STRING_DESCRIPTOR */
+    req->TransferBuffer = ExAllocatePool(NonPagedPool, req->TransferBufferLength);
+    if (!req->TransferBuffer)
+    {
+        RtlLeaveCriticalSection(&fdo_list_cs);
+        *buffer_len = 0;
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    req->Index = index;
+    req->DescriptorType = USB_STRING_DESCRIPTOR_TYPE;
+    req->LanguageId = langid;
+
+    KeInitializeEvent(&event, NotificationEvent, FALSE);
+    irp = IoBuildDeviceIoControlRequest(IOCTL_INTERNAL_USB_SUBMIT_URB, fdo->bus_device,
+                                        NULL, 0, NULL, 0, TRUE, &event, &io);
+    IoGetNextIrpStackLocation(irp)->Parameters.Others.Argument1 = &urb;
+    status = IoCallDriver(fdo->bus_device, irp);
+    RtlLeaveCriticalSection(&fdo_list_cs);
+
+    if (status == STATUS_PENDING)
+        KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, NULL);
+
+    if (!io.Status && !req->Hdr.Status)
+    {
+        *buffer_len = (req->TransferBufferLength > 2) ? req->TransferBufferLength - 2 : 0;
+        memcpy(buffer, (char *)req->TransferBuffer + 2, *buffer_len);
+        status = STATUS_SUCCESS;
+    }
+    else
+    {
+        *buffer_len = 0;
+        status = (io.Status) ? io.Status : STATUS_UNSUCCESSFUL;
+    }
+
+    ExFreePool(req->TransferBuffer);
+
+    return status;
+}
+
 static NTSTATUS hid_get_device_string(DEVICE_OBJECT *device, DWORD index, WCHAR *buffer, DWORD buffer_len)
 {
     struct device_extension *ext = (struct device_extension *)device->DeviceExtension;
@@ -1596,6 +1659,29 @@ static NTSTATUS WINAPI hid_internal_dispatch(DEVICE_OBJECT *device, IRP *irp)
 
     switch ((code = irpsp->Parameters.DeviceIoControl.IoControlCode))
     {
+        case IOCTL_HID_GET_INDEXED_STRING:
+        {
+            UINT index = LOWORD(irpsp->Parameters.DeviceIoControl.Type3InputBuffer);
+            LANGID langid = HIWORD(irpsp->Parameters.DeviceIoControl.Type3InputBuffer);
+            WCHAR *output_buf = MmGetSystemAddressForMdlSafe(irp->MdlAddress, NormalPagePriority);
+            TRACE("IOCTL_HID_GET_INDEXED_STRING[%08x]\n",
+                  PtrToUint(irpsp->Parameters.DeviceIoControl.Type3InputBuffer));
+
+            if (buffer_len < sizeof(WCHAR))
+            {
+                irp->IoStatus.Status = STATUS_BUFFER_TOO_SMALL;
+                break;
+            }
+
+            buffer_len -= sizeof(WCHAR);  /* the returned buffer is not NULL terminated */
+            irp->IoStatus.Status = hid_get_indexed_string(device, index, langid, output_buf, &buffer_len);
+            if (!irp->IoStatus.Status)
+            {
+                output_buf[buffer_len / sizeof(WCHAR)] = 0;
+                irp->IoStatus.Information = buffer_len + sizeof(WCHAR);
+            }
+            break;
+        }
         case IOCTL_HID_GET_DEVICE_ATTRIBUTES:
         {
             HID_DEVICE_ATTRIBUTES *attr = (HID_DEVICE_ATTRIBUTES *)irp->UserBuffer;
