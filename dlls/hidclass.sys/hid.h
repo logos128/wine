@@ -57,6 +57,7 @@ typedef struct _BASE_DEVICE_EXTENSION
 
             HID_COLLECTION_INFORMATION information;
             HIDP_DEVICE_DESC device_desc;
+            LONG langid;
 
             ULONG poll_interval;
             HANDLE halt_event;
