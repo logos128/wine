@@ -8,6 +8,7 @@ Wine=mfg_section
 
 [mfg_section]
 Wine HID bus driver=device_section,root\winebus
+Wine HID USB driver=device_section,USB\CLASS_03
 
 [device_section.Services]
 AddService = winebus,0x2,svc_section
