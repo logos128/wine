@@ -1241,6 +1241,9 @@ static void udev_add_device(struct udev_device *dev, int fd)
     get_device_subsystem_info(dev, "usb", "usb_device", &desc, &bus);
     if (bus == BUS_BLUETOOTH) desc.is_bluetooth = TRUE;
 
+    if (is_xbox_gamepad(desc.vid, desc.pid))
+        desc.is_gamepad = TRUE;
+
     subsystem = udev_device_get_subsystem(dev);
     if (!strcmp(subsystem, "hidraw"))
     {
@@ -1271,7 +1274,16 @@ static void udev_add_device(struct udev_device *dev, int fd)
         {
             desc.vid = device_id.vendor;
             desc.pid = device_id.product;
-            desc.version = device_id.version;
+            if (!desc.version)
+                desc.version = device_id.version;
+        }
+
+        if (!desc.is_gamepad)
+        {
+            int axes=0, buttons=0;
+            axes = count_abs_axis(fd);
+            buttons = count_buttons(fd, NULL);
+            desc.is_gamepad = (axes == 6 && buttons >= 14);
         }
 
         if (!desc.manufacturer[0]) memcpy(desc.manufacturer, evdev, sizeof(evdev));
@@ -1291,18 +1303,6 @@ static void udev_add_device(struct udev_device *dev, int fd)
         static const WCHAR zeros[] = {'0','0','0','0',0};
         memcpy(desc.serialnumber, zeros, sizeof(zeros));
     }
-
-    if (is_xbox_gamepad(desc.vid, desc.pid))
-        desc.is_gamepad = TRUE;
-#ifdef HAS_PROPER_INPUT_HEADER
-    else if (!strcmp(subsystem, "input"))
-    {
-        int axes=0, buttons=0;
-        axes = count_abs_axis(fd);
-        buttons = count_buttons(fd, NULL);
-        desc.is_gamepad = (axes == 6 && buttons >= 14);
-    }
-#endif
 
     TRACE("dev %p, node %s, desc %s.\n", dev, debugstr_a(devnode), debugstr_device_desc(&desc));
 
