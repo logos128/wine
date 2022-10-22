@@ -33,6 +33,8 @@
 #include "ddk/hidport.h"
 #include "ddk/hidtypes.h"
 #include "ddk/hidpddi.h"
+#include "winreg.h"
+#include "cfgmgr32.h"
 #include "wine/asm.h"
 #include "wine/debug.h"
 #include "wine/list.h"
@@ -49,7 +51,6 @@ static DEVICE_OBJECT *keyboard_obj;
 
 /* The root-enumerated device stack. */
 static DEVICE_OBJECT *bus_pdo;
-static DEVICE_OBJECT *bus_fdo;
 
 static HANDLE driver_key;
 
@@ -62,8 +63,14 @@ struct hid_report
 
 struct device
 {
+    BOOL is_fdo;
     struct device_desc desc;
 };
+
+static inline struct device *impl_from_DEVICE_OBJECT(DEVICE_OBJECT *device)
+{
+    return (struct device *)device->DeviceExtension;
+}
 
 enum device_state
 {
@@ -108,6 +115,25 @@ static CRITICAL_SECTION_DEBUG critsect_debug =
 static CRITICAL_SECTION device_list_cs = { &critsect_debug, -1, 0, 0, 0, 0 };
 
 static struct list device_list = LIST_INIT(device_list);
+
+struct func_device
+{
+    struct device base;
+
+    struct list entry;
+    DEVICE_OBJECT *bus_device;
+};
+
+static CRITICAL_SECTION fdo_list_cs;
+static CRITICAL_SECTION_DEBUG fdo_list_cs_dbg =
+{
+    0, 0, &fdo_list_cs,
+    { &fdo_list_cs_dbg.ProcessLocksList, &fdo_list_cs_dbg.ProcessLocksList },
+      0, 0, { (DWORD_PTR)(__FILE__ ": fdo_list_cs") }
+};
+static CRITICAL_SECTION fdo_list_cs = { &fdo_list_cs_dbg, -1, 0, 0, 0, 0 };
+
+static struct list fdo_list = LIST_INIT(fdo_list);
 
 static NTSTATUS winebus_call(unsigned int code, void *args)
 {
@@ -162,6 +188,21 @@ static void unix_device_set_feature_report(DEVICE_OBJECT *device, HID_XFER_PACKE
         .io = io,
     };
     winebus_call(device_set_feature_report, &params);
+}
+
+static struct func_device *find_func_device(struct device_desc *desc)
+{
+    struct func_device *fdo;
+
+    LIST_FOR_EACH_ENTRY(fdo, &fdo_list, struct func_device, entry)
+    {
+        if (fdo->base.desc.vid == desc->vid && fdo->base.desc.pid == desc->pid &&
+            fdo->base.desc.version == desc->version && fdo->base.desc.input == desc->input &&
+            fdo->base.desc.busnum == desc->busnum && fdo->base.desc.portnum == desc->portnum)
+            return fdo;
+    }
+
+    return NULL;
 }
 
 static DWORD get_device_index(struct device_desc *desc)
@@ -306,6 +347,7 @@ static DEVICE_OBJECT *bus_create_hid_device(struct device_desc *desc, UINT64 uni
 
     /* fill out device_extension struct */
     ext = (struct device_extension *)device->DeviceExtension;
+    ext->base.is_fdo        = FALSE;
     ext->base.desc          = *desc;
     ext->device             = device;
     ext->index              = get_device_index(desc);
@@ -366,13 +408,16 @@ __ASM_STDCALL_FUNC(wrap_fastcall_func1, 8,
 #define call_fastcall_func1(func,a) func(a)
 #endif
 
-static NTSTATUS build_device_relations(DEVICE_RELATIONS **devices)
+static NTSTATUS build_device_relations(DEVICE_OBJECT *device, DEVICE_RELATIONS **devices)
 {
+    struct func_device *fdo = (struct func_device *)device->DeviceExtension;
     struct device_extension *ext;
+    unsigned int count;
     int i;
 
     RtlEnterCriticalSection(&device_list_cs);
-    *devices = ExAllocatePool(PagedPool, offsetof(DEVICE_RELATIONS, Objects[list_count(&device_list)]));
+    count = (fdo->bus_device == bus_pdo) ? list_count(&device_list) : 0;
+    *devices = ExAllocatePool(PagedPool, offsetof(DEVICE_RELATIONS, Objects[count]));
 
     if (!*devices)
     {
@@ -381,11 +426,14 @@ static NTSTATUS build_device_relations(DEVICE_RELATIONS **devices)
     }
 
     i = 0;
-    LIST_FOR_EACH_ENTRY(ext, &device_list, struct device_extension, entry)
+    if (count)
     {
-        (*devices)->Objects[i] = ext->device;
-        call_fastcall_func1(ObfReferenceObject, ext->device);
-        i++;
+        LIST_FOR_EACH_ENTRY(ext, &device_list, struct device_extension, entry)
+        {
+            (*devices)->Objects[i] = ext->device;
+            call_fastcall_func1(ObfReferenceObject, ext->device);
+            i++;
+        }
     }
     RtlLeaveCriticalSection(&device_list_cs);
     (*devices)->Count = i;
@@ -557,7 +605,7 @@ static void process_hid_report(DEVICE_OBJECT *device, BYTE *report_buf, DWORD re
     RtlLeaveCriticalSection(&ext->cs);
 }
 
-static NTSTATUS handle_IRP_MN_QUERY_DEVICE_RELATIONS(IRP *irp)
+static NTSTATUS handle_IRP_MN_QUERY_DEVICE_RELATIONS(DEVICE_OBJECT *device, IRP *irp)
 {
     NTSTATUS status = irp->IoStatus.Status;
     IO_STACK_LOCATION *irpsp = IoGetCurrentIrpStackLocation( irp );
@@ -572,7 +620,7 @@ static NTSTATUS handle_IRP_MN_QUERY_DEVICE_RELATIONS(IRP *irp)
             FIXME("Unhandled Device Relation %x\n",irpsp->Parameters.QueryDeviceRelations.Type);
             break;
         case BusRelations:
-            status = build_device_relations((DEVICE_RELATIONS**)&irp->IoStatus.Information);
+            status = build_device_relations(device, (DEVICE_RELATIONS**)&irp->IoStatus.Information);
             break;
         default:
             FIXME("Unknown Device Relation %x\n",irpsp->Parameters.QueryDeviceRelations.Type);
@@ -958,22 +1006,26 @@ static NTSTATUS iohid_driver_init(void)
 static NTSTATUS fdo_pnp_dispatch(DEVICE_OBJECT *device, IRP *irp)
 {
     IO_STACK_LOCATION *irpsp = IoGetCurrentIrpStackLocation(irp);
+    struct func_device *fdo = (struct func_device *)device->DeviceExtension;
     BOOL enable_sdl;
     NTSTATUS ret;
 
     switch (irpsp->MinorFunction)
     {
     case IRP_MN_QUERY_DEVICE_RELATIONS:
-        irp->IoStatus.Status = handle_IRP_MN_QUERY_DEVICE_RELATIONS(irp);
+        irp->IoStatus.Status = handle_IRP_MN_QUERY_DEVICE_RELATIONS(device, irp);
         break;
     case IRP_MN_START_DEVICE:
-        mouse_device_create();
-        keyboard_device_create();
+        if (fdo->bus_device == bus_pdo)
+        {
+            mouse_device_create();
+            keyboard_device_create();
 
-        if ((enable_sdl = check_bus_option(L"Enable SDL", 1)))
-            enable_sdl = !sdl_driver_init();
-        udev_driver_init(enable_sdl);
-        iohid_driver_init();
+            if ((enable_sdl = check_bus_option(L"Enable SDL", 1)))
+                enable_sdl = !sdl_driver_init();
+            udev_driver_init(enable_sdl);
+            iohid_driver_init();
+        }
 
         irp->IoStatus.Status = STATUS_SUCCESS;
         break;
@@ -981,17 +1033,25 @@ static NTSTATUS fdo_pnp_dispatch(DEVICE_OBJECT *device, IRP *irp)
         irp->IoStatus.Status = STATUS_SUCCESS;
         break;
     case IRP_MN_REMOVE_DEVICE:
-        winebus_call(sdl_stop, NULL);
-        winebus_call(udev_stop, NULL);
-        winebus_call(iohid_stop, NULL);
+        if (fdo->bus_device == bus_pdo)
+        {
+            winebus_call(sdl_stop, NULL);
+            winebus_call(udev_stop, NULL);
+            winebus_call(iohid_stop, NULL);
 
-        WaitForMultipleObjects(bus_count, bus_thread, TRUE, INFINITE);
-        while (bus_count--) CloseHandle(bus_thread[bus_count]);
+            WaitForMultipleObjects(bus_count, bus_thread, TRUE, INFINITE);
+            while (bus_count--) CloseHandle(bus_thread[bus_count]);
+        }
+
+        RtlEnterCriticalSection(&fdo_list_cs);
+        if (fdo->bus_device == bus_pdo) bus_pdo = NULL;
+        list_remove(&fdo->entry);
+        RtlLeaveCriticalSection(&fdo_list_cs);
 
         irp->IoStatus.Status = STATUS_SUCCESS;
         IoSkipCurrentIrpStackLocation(irp);
-        ret = IoCallDriver(bus_pdo, irp);
-        IoDetachDevice(bus_pdo);
+        ret = IoCallDriver(fdo->bus_device, irp);
+        IoDetachDevice(fdo->bus_device);
         IoDeleteDevice(device);
         return ret;
     default:
@@ -999,7 +1059,7 @@ static NTSTATUS fdo_pnp_dispatch(DEVICE_OBJECT *device, IRP *irp)
     }
 
     IoSkipCurrentIrpStackLocation(irp);
-    return IoCallDriver(bus_pdo, irp);
+    return IoCallDriver(fdo->bus_device, irp);
 }
 
 static NTSTATUS pdo_pnp_dispatch(DEVICE_OBJECT *device, IRP *irp)
@@ -1101,8 +1161,9 @@ static NTSTATUS pdo_pnp_dispatch(DEVICE_OBJECT *device, IRP *irp)
 
 static NTSTATUS WINAPI common_pnp_dispatch(DEVICE_OBJECT *device, IRP *irp)
 {
-    if (device == bus_fdo)
-        return fdo_pnp_dispatch(device, irp);
+    struct device *impl = impl_from_DEVICE_OBJECT(device);
+
+    if (impl->is_fdo) return fdo_pnp_dispatch(device, irp);
     return pdo_pnp_dispatch(device, irp);
 }
 
@@ -1157,14 +1218,15 @@ static void hidraw_disable_report_fixups(DEVICE_OBJECT *device)
 static NTSTATUS WINAPI hid_internal_dispatch(DEVICE_OBJECT *device, IRP *irp)
 {
     IO_STACK_LOCATION *irpsp = IoGetCurrentIrpStackLocation(irp);
+    struct device *impl = impl_from_DEVICE_OBJECT(device);
     struct device_extension *ext = (struct device_extension *)device->DeviceExtension;
     ULONG i, code, buffer_len = irpsp->Parameters.DeviceIoControl.OutputBufferLength;
     NTSTATUS status;
 
-    if (device == bus_fdo)
+    if (impl->is_fdo)
     {
         IoSkipCurrentIrpStackLocation(irp);
-        return IoCallDriver(bus_pdo, irp);
+        return IoCallDriver(((struct func_device *)device->DeviceExtension)->bus_device, irp);
     }
 
     RtlEnterCriticalSection(&ext->cs);
@@ -1344,23 +1406,91 @@ static NTSTATUS WINAPI hid_internal_dispatch(DEVICE_OBJECT *device, IRP *irp)
     return status;
 }
 
+static NTSTATUS get_bus_device_id(DEVICE_OBJECT *device, BUS_QUERY_ID_TYPE type, WCHAR *id)
+{
+    IO_STACK_LOCATION *stack;
+    IO_STATUS_BLOCK io;
+    KEVENT event;
+    IRP *irp;
+
+    KeInitializeEvent(&event, NotificationEvent, FALSE);
+    irp = IoBuildSynchronousFsdRequest(IRP_MJ_PNP, device, NULL, 0, NULL, &event, &io);
+    if (irp == NULL) return STATUS_NO_MEMORY;
+
+    stack = IoGetNextIrpStackLocation(irp);
+    stack->MinorFunction = IRP_MN_QUERY_ID;
+    stack->Parameters.QueryId.IdType = type;
+
+    if (IoCallDriver(device, irp) == STATUS_PENDING)
+        KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, NULL);
+
+    wcscpy(id, (WCHAR *)io.Information);
+    ExFreePool((WCHAR *)io.Information);
+    return io.Status;
+}
+
 static NTSTATUS WINAPI driver_add_device(DRIVER_OBJECT *driver, DEVICE_OBJECT *pdo)
 {
+    static const WCHAR device_format[] = L"USB\\VID_%04X&PID_%04X&MI_%02u";
+    static const WCHAR instance_format[] = L"%*u&%u&%u&%u";
+    BOOL is_root = FALSE;
+    WCHAR device_id[MAX_DEVICE_ID_LEN], instance_id[MAX_DEVICE_ID_LEN];
+    struct func_device *fdo;
+    DEVICE_OBJECT *device;
     NTSTATUS ret;
+    int result;
 
     TRACE("driver %p, pdo %p.\n", driver, pdo);
 
-    if ((ret = IoCreateDevice(driver, 0, NULL, FILE_DEVICE_BUS_EXTENDER, 0, FALSE, &bus_fdo)))
+    if ((ret = get_bus_device_id(pdo, BusQueryDeviceID, device_id)))
+    {
+        ERR("failed to get bus device id, status %#lx.\n", ret);
+        return ret;
+    }
+
+    if ((ret = get_bus_device_id(pdo, BusQueryInstanceID, instance_id)))
+    {
+        ERR("failed to get bus device instance id, status %#lx.\n", ret);
+        return ret;
+    }
+
+    if ((ret = IoCreateDevice(driver, sizeof(struct func_device), NULL,
+                              FILE_DEVICE_BUS_EXTENDER, 0, FALSE, &device)))
     {
         ERR("Failed to create FDO, status %#lx.\n", ret);
         return ret;
     }
 
-    IoAttachDeviceToDeviceStack(bus_fdo, pdo);
-    bus_pdo = pdo;
+    fdo = (struct func_device *)device->DeviceExtension;
+    fdo->base.is_fdo = TRUE;
+    fdo->bus_device = pdo;
+    result = swscanf(device_id, device_format, &fdo->base.desc.vid, &fdo->base.desc.pid,
+                     &fdo->base.desc.input);
+    if (result < 3)
+        fdo->base.desc.input = 0;
+    if (result < 2)
+        fdo->base.desc.vid = fdo->base.desc.pid = 0;
+    if (result < 1)
+        is_root = TRUE;
 
-    bus_fdo->Flags &= ~DO_DEVICE_INITIALIZING;
+    result = swscanf(instance_id, instance_format, &fdo->base.desc.version, &fdo->base.desc.busnum,
+                     &fdo->base.desc.portnum);
+    if (result < 3)
+        fdo->base.desc.version = fdo->base.desc.busnum = fdo->base.desc.portnum = 0;
 
+    RtlEnterCriticalSection(&fdo_list_cs);
+    if (bus_pdo) is_root = FALSE;
+    else if (is_root) bus_pdo = pdo;
+
+    if (!is_root) list_add_tail(&fdo_list, &fdo->entry);
+    else list_init(&fdo->entry);
+    RtlLeaveCriticalSection(&fdo_list_cs);
+
+    TRACE("device %p, device_id %s, instance_id %s.\n", device,
+          debugstr_w(device_id), debugstr_w(instance_id));
+
+    IoAttachDeviceToDeviceStack(device, pdo);
+    device->Flags &= ~DO_DEVICE_INITIALIZING;
     return STATUS_SUCCESS;
 }
 
