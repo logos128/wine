@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include "hid.h"
 #include "winreg.h"
+#include "winnls.h"
 #include "ntuser.h"
 
 #include "ddk/hidsdi.h"
@@ -520,12 +521,27 @@ static NTSTATUS hid_device_xfer_report( struct phys_device *pdo, ULONG code, IRP
     return STATUS_PENDING;
 }
 
+static void hid_get_indexed_string( DEVICE_OBJECT *device, ULONG index, void *buffer,
+                                    ULONG buffer_len, IO_STATUS_BLOCK *io )
+{
+    IRP *irp;
+    KEVENT event;
+
+    KeInitializeEvent( &event, NotificationEvent, FALSE );
+    irp = IoBuildDeviceIoControlRequest( IOCTL_HID_GET_INDEXED_STRING, device, NULL, sizeof(index),
+                                         buffer, buffer_len, TRUE, &event, io );
+    IoGetNextIrpStackLocation( irp )->Parameters.DeviceIoControl.Type3InputBuffer = ULongToPtr( index );
+    if (IoCallDriver( device, irp ) == STATUS_PENDING)
+        KeWaitForSingleObject( &event, Executive, KernelMode, FALSE, NULL );
+}
+
 NTSTATUS WINAPI pdo_ioctl( DEVICE_OBJECT *device, IRP *irp )
 {
     IO_STACK_LOCATION *irpsp = IoGetCurrentIrpStackLocation( irp );
     struct phys_device *pdo = pdo_from_DEVICE_OBJECT( device );
     NTSTATUS status = irp->IoStatus.Status;
-    ULONG code, index;
+    ULONG code, index, output_len;
+    WCHAR *output_buf;
     const WCHAR *str;
     BOOL removed;
     KIRQL irql;
@@ -572,12 +588,54 @@ NTSTATUS WINAPI pdo_ioctl( DEVICE_OBJECT *device, IRP *irp )
             }
             break;
         }
+        case IOCTL_HID_GET_INDEXED_STRING:
+        {
+            IO_STATUS_BLOCK io;
+            LONG langid;
+            LANGID buf[32], sys_langid = GetSystemDefaultLangID();
+            DWORD i;
+
+            if (irpsp->Parameters.DeviceIoControl.InputBufferLength < sizeof(ULONG))
+            {
+                status = STATUS_INVALID_BUFFER_SIZE;
+                break;
+            }
+
+            if ((index = *(ULONG *)irp->AssociatedIrp.SystemBuffer))
+            {
+                if (!(langid = InterlockedOr( &pdo->langid, 0 )))
+                {
+                    hid_get_indexed_string( pdo->parent_fdo, 0, buf, sizeof(buf), &io );
+                    if (!io.Status && io.Information >= sizeof(buf[0]) * 2)  /* NULL terminated buffer */
+                    {
+                        langid = buf[0];
+                        io.Information = io.Information / sizeof(buf[0]) - 1;
+                        for (i = 0; i < io.Information; i++)
+                        {
+                            if (buf[i] == sys_langid)
+                            {
+                                langid = sys_langid;
+                                break;
+                            }
+                        }
+                        InterlockedExchange( &pdo->langid, langid );
+                    }
+                }
+                index = MAKELONG(index, langid);
+            }
+
+            output_buf = MmGetSystemAddressForMdlSafe( irp->MdlAddress, NormalPagePriority );
+            output_len = irpsp->Parameters.DeviceIoControl.OutputBufferLength;
+            hid_get_indexed_string( pdo->parent_fdo, index, output_buf, output_len, &irp->IoStatus );
+            status = irp->IoStatus.Status;
+            break;
+        }
         case IOCTL_HID_GET_PRODUCT_STRING:
         case IOCTL_HID_GET_SERIALNUMBER_STRING:
         case IOCTL_HID_GET_MANUFACTURER_STRING:
         {
-            WCHAR *output_buf = MmGetSystemAddressForMdlSafe( irp->MdlAddress, NormalPagePriority );
-            ULONG output_len = irpsp->Parameters.DeviceIoControl.OutputBufferLength;
+            output_buf = MmGetSystemAddressForMdlSafe( irp->MdlAddress, NormalPagePriority );
+            output_len = irpsp->Parameters.DeviceIoControl.OutputBufferLength;
 
             if (code == IOCTL_HID_GET_PRODUCT_STRING) index = HID_STRING_ID_IPRODUCT;
             if (code == IOCTL_HID_GET_SERIALNUMBER_STRING) index = HID_STRING_ID_ISERIALNUMBER;

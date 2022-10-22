@@ -77,6 +77,7 @@ struct phys_device
 
     HIDP_COLLECTION_DESC *collection_desc;
     HID_COLLECTION_INFORMATION information;
+    LONG langid;
 
     UINT32 rawinput_handle;
     UNICODE_STRING link_name;
