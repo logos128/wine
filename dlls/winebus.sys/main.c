@@ -193,13 +193,30 @@ static DWORD get_device_index(struct device_desc *desc, struct list **before)
 static WCHAR *get_instance_id(DEVICE_OBJECT *device)
 {
     struct device_extension *ext = (struct device_extension *)device->DeviceExtension;
-    DWORD len = wcslen(ext->desc.serialnumber) + 33;
+    struct device_desc *desc = &ext->desc;
+    const DWORD sn_len = wcslen(desc->serialnumber);
+    DWORD len = (sn_len ? sn_len : ARRAY_SIZE(desc->port_path)*2) + 33;
+    WCHAR tmp[ARRAY_SIZE(desc->port_path)*2+1];
     WCHAR *dst;
+    int i;
 
     if ((dst = ExAllocatePool(PagedPool, len * sizeof(WCHAR))))
     {
-        swprintf(dst, len, L"%u&%s&%x&%u&%u", ext->desc.version, ext->desc.serialnumber,
-                 ext->desc.uid, ext->index, ext->desc.is_gamepad);
+        if (sn_len && !ext->index)
+        {
+            swprintf(dst, len, L"%u&%x&%u&%s&%u", desc->version, desc->uid, ext->index,
+                     desc->serialnumber, desc->is_gamepad);
+        }
+        else
+        {
+            i = 0;
+            do
+                swprintf(&tmp[i*2], ARRAY_SIZE(tmp) - (i * 2), L"%02X", desc->port_path[i]);
+            while (++i < ARRAY_SIZE(desc->port_path) && desc->port_path[i]);
+
+            swprintf(dst, len, L"%u&%x&%u&%s&%u", desc->version, desc->uid,
+                     desc->bus_num ? desc->bus_num : ext->index, tmp, desc->is_gamepad);
+        }
     }
 
     return dst;
