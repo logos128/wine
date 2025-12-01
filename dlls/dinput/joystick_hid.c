@@ -1433,6 +1433,7 @@ static HRESULT hid_joystick_device_try_open( const WCHAR *path, HANDLE *device, 
     NTSTATUS status;
     UINT32 handle;
     USHORT count;
+    int res;
 
     device_file = CreateFileW( path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED | FILE_FLAG_NO_BUFFERING, 0 );
@@ -1454,6 +1455,7 @@ static HRESULT hid_joystick_device_try_open( const WCHAR *path, HANDLE *device, 
     if (!HidD_GetProductString( device_file, instance->tszInstanceName, MAX_PATH * sizeof(WCHAR) )) goto failed;
     if (!HidD_GetProductString( device_file, instance->tszProductName, MAX_PATH * sizeof(WCHAR) )) goto failed;
 
+    TRACE( "device path %s\n", debugstr_w( path ) );
     if ((device_path = wcsdup( path )) && *device_path == L'\\' && (tmp = wcschr( device_path, sep )))
     {
         device_id = ++tmp;
@@ -1475,6 +1477,7 @@ static HRESULT hid_joystick_device_try_open( const WCHAR *path, HANDLE *device, 
         crc32 = RtlComputeCrc32( 0, (const BYTE *)CharUpperW( instance_id ), wcslen( instance_id ) * sizeof(WCHAR) );
         instance->guidInstance.Data2 = HIWORD( crc32 );
         instance->guidInstance.Data3 = LOWORD( crc32 );
+        TRACE( "device_id %s, instance_id %s\n", debugstr_w( device_id ), debugstr_w( instance_id ) );
     }
     else
     {
@@ -1488,6 +1491,8 @@ static HRESULT hid_joystick_device_try_open( const WCHAR *path, HANDLE *device, 
         instance->guidInstance.Data2 = attrs->VendorID;
         instance->guidInstance.Data3 = attrs->ProductID;
     }
+    TRACE( "guidInstance %s\n", debugstr_guid( &instance->guidInstance ) );
+
     instance->guidProduct = dinput_pidvid_guid;
     instance->guidProduct.Data1 = MAKELONG( attrs->VendorID, attrs->ProductID );
     instance->guidFFDriver = GUID_NULL;
