@@ -227,7 +227,8 @@ LPDIOBJECTDATAFORMAT dataformat_to_odf_by_type(LPCDIDATAFORMAT df, int n, DWORD 
 }
 
 static BOOL match_device_object( const DIDATAFORMAT *device_format, DIDATAFORMAT *user_format,
-                                 const DIOBJECTDATAFORMAT *match_obj, DWORD version, BOOL *identical )
+                                 const DIOBJECTDATAFORMAT *match_obj, DWORD version, BOOL *identical,
+                                 int shift_num_buttons )
 {
     DWORD i, device_instance, instance = DIDFT_GETINSTANCE( match_obj->dwType );
     DIOBJECTDATAFORMAT *device_obj, *user_obj;
@@ -239,6 +240,12 @@ static BOOL match_device_object( const DIDATAFORMAT *device_format, DIDATAFORMAT
         user_obj = user_format->rgodf + i;
         device_obj = device_format->rgodf + i;
         device_instance = DIDFT_GETINSTANCE( device_obj->dwType );
+
+        if (shift_num_buttons > 0 && (DIDFT_GETTYPE( device_obj->dwType ) & DIDFT_BUTTON))
+        {
+            if (device_instance < shift_num_buttons) continue;
+            device_instance -= shift_num_buttons;
+        }
 
         if (!(user_obj->dwType & DIDFT_OPTIONAL)) continue; /* already matched */
         if (match_obj->pguid && device_obj->pguid && !IsEqualGUID( device_obj->pguid, match_obj->pguid )) continue;
@@ -257,7 +264,7 @@ static BOOL match_device_object( const DIDATAFORMAT *device_format, DIDATAFORMAT
     return FALSE;
 }
 
-static HRESULT dinput_device_init_user_format( struct dinput_device *impl, const DIDATAFORMAT *format )
+static HRESULT dinput_device_init_user_format( struct dinput_device *impl, const DIDATAFORMAT *format, int shift_num_buttons )
 {
     DIDATAFORMAT *user_format = &impl->user_format, *device_format = &impl->device_format;
     DIOBJECTDATAFORMAT *user_obj, *match_obj;
@@ -280,7 +287,7 @@ static HRESULT dinput_device_init_user_format( struct dinput_device *impl, const
     {
         match_obj = format->rgodf + i;
 
-        if (!match_device_object( device_format, user_format, match_obj, impl->dinput->dwVersion, &identical ))
+        if (!match_device_object( device_format, user_format, match_obj, impl->dinput->dwVersion, &identical, shift_num_buttons ))
         {
             WARN( "object %s not found\n", debugstr_diobjectdataformat( match_obj ) );
             if (!(match_obj->dwType & DIDFT_OPTIONAL)) goto failed;
@@ -525,6 +532,9 @@ static HRESULT WINAPI dinput_device_SetDataFormat( IDirectInputDevice8W *iface, 
     struct dinput_device *This = impl_from_IDirectInputDevice8W( iface );
     HRESULT res = DI_OK;
     ULONG i;
+    const char *env;
+    char *buffer;
+    int shift_num_buttons = 0;
 
     TRACE( "iface %p, format %p.\n", iface, format );
 
@@ -539,10 +549,44 @@ static HRESULT WINAPI dinput_device_SetDataFormat( IDirectInputDevice8W *iface, 
     if (format->dwObjSize != sizeof(DIOBJECTDATAFORMAT)) return DIERR_INVALIDPARAM;
     if (This->status == STATUS_ACQUIRED) return DIERR_ACQUIRED;
 
+    env = getenv( "WINE_DINPUT_DF_SHIFT_NUM_BUTTONS" );
+    if (env && (buffer = _strdup( env )))
+    {
+        char *next, *p;
+        int n;
+        UINT vid, pid;
+        DIPROPDWORD vidpid =
+        {
+            .diph =
+            {
+                .dwSize = sizeof(DIPROPDWORD),
+                .dwHeaderSize = sizeof(DIPROPHEADER),
+                .dwHow = DIPH_DEVICE,
+            },
+        };
+
+        if (SUCCEEDED(IDirectInputDevice8_GetProperty( iface, DIPROP_VIDPID, &vidpid.diph )))
+        {
+            p = buffer;
+            while (p && *p)
+            {
+                next = p;
+                if ((p = strchr( next, ',' ))) *p++ = 0;
+                if (sscanf( next, "%x:%x=%d", &vid, &pid, &n ) < 3) continue;
+                if (vid != LOWORD(vidpid.dwData) || pid != HIWORD(vidpid.dwData)) continue;
+                shift_num_buttons = n;
+                TRACE( "WINE_DINPUT_DF_SHIFT_NUM_BUTTONS %04x:%04x=%d\n", vid, pid, n );
+                break;
+            }
+        }
+
+        free( buffer );
+    }
+
     EnterCriticalSection(&This->crit);
 
     dinput_device_release_user_format( This );
-    res = dinput_device_init_user_format( This, format );
+    res = dinput_device_init_user_format( This, format, shift_num_buttons );
 
     LeaveCriticalSection(&This->crit);
     return res;
