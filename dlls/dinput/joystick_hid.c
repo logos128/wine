@@ -95,12 +95,14 @@ static CRITICAL_SECTION_DEBUG joystick_cache_cs_debug =
 static CRITICAL_SECTION joystick_cache_cs = { &joystick_cache_cs_debug, -1, 0, 0, 0, 0 };
 
 static struct list joystick_cache = LIST_INIT( joystick_cache );
+static struct list joy_id_cache = LIST_INIT( joy_id_cache );
 
 #define MAX_JOY_ID  16
 
 struct cache_entry
 {
     struct list             entry;
+    struct list             entry_id;
     DIDEVICEINSTANCEW       instance;
     DWORD                   joy_id;
     WCHAR                   path[MAX_PATH];
@@ -129,7 +131,7 @@ static HRESULT cache_entry_create( const DIDEVICEINSTANCEW *instance, DWORD joy_
 
 static HRESULT insert_cache_entry( DIDEVICEINSTANCEW *instance, DWORD joy_id, const WCHAR *path )
 {
-    struct cache_entry *entry, *next;
+    struct cache_entry *entry, *next, *next_id;
     HRESULT hr;
 
 #define SWAP(x) MAKELONG( HIWORD(x), LOWORD(x) )
@@ -150,10 +152,14 @@ static HRESULT insert_cache_entry( DIDEVICEINSTANCEW *instance, DWORD joy_id, co
     }
 #undef SWAP
 
+    LIST_FOR_EACH_ENTRY( next_id, &joy_id_cache, struct cache_entry, entry_id )
+        if (next_id->joy_id > joy_id) break;
+
     if (FAILED(hr = cache_entry_create( instance, joy_id, path, &entry ))) return hr;
     TRACE( "Created instance %s, path %s, joy_id %#lx\n", debugstr_device_instance( instance ),
            debugstr_w( path ), joy_id );
     list_add_before( &next->entry, &entry->entry );
+    list_add_before( &next_id->entry_id, &entry->entry_id );
 
     return S_OK;
 }
@@ -227,12 +233,17 @@ static void load_registry_instances( HKEY root )
 static void assign_joystick_ids(void)
 {
     DWORD ids = ((1 << MAX_JOY_ID) - 1) | (1 << (MAX_JOY_ID + 1));
-    struct cache_entry *entry;
+    struct cache_entry *entry, *next_id;
 
     LIST_FOR_EACH_ENTRY( entry, &joystick_cache, struct cache_entry, entry )
     {
         if (!*entry->path || entry->joy_id >= MAX_JOY_ID) continue;
-        if (!(ids & (1 << entry->joy_id))) entry->joy_id = MAX_JOY_ID + 1;
+        if (!(ids & (1 << entry->joy_id)))
+        {
+            list_remove( &entry->entry_id );
+            entry->joy_id = MAX_JOY_ID + 1;
+            list_add_tail( &joy_id_cache, &entry->entry_id );
+        }
         else ids &= ~(1 << entry->joy_id);
 
         TRACE( "Reusing joy_id %#lx for instance %s, path %s\n", entry->joy_id,
@@ -243,7 +254,15 @@ static void assign_joystick_ids(void)
     {
         if (!*entry->path || entry->joy_id < MAX_JOY_ID) continue;
         BitScanForward( &entry->joy_id, ids );
-        if (entry->joy_id < MAX_JOY_ID) ids &= ~(1 << entry->joy_id);
+        if (entry->joy_id < MAX_JOY_ID)
+        {
+            list_remove( &entry->entry_id );
+            LIST_FOR_EACH_ENTRY( next_id, &joy_id_cache, struct cache_entry, entry_id )
+                if (next_id->joy_id > entry->joy_id) break;
+            list_add_before( &next_id->entry_id, &entry->entry_id );
+
+            ids &= ~(1 << entry->joy_id);
+        }
 
         TRACE( "Assigned joy_id %#lx to instance %s, path %s\n", entry->joy_id,
                debugstr_device_instance( &entry->instance ), debugstr_w( entry->path ) );
@@ -294,6 +313,7 @@ void hid_joystick_cleanup_devices(void)
     {
         struct cache_entry *entry = LIST_ENTRY( ptr, struct cache_entry, entry );
         list_remove( &entry->entry );
+        list_remove( &entry->entry_id );
         free( entry );
     }
 }
@@ -1912,17 +1932,27 @@ HRESULT hid_joystick_refresh_devices(void)
     return hr;
 }
 
-HRESULT hid_joystick_enum_device( DWORD type, DWORD flags, DIDEVICEINSTANCEW *instance, DWORD version, int index )
+HRESULT hid_joystick_enum_device( DWORD type, DWORD flags, DIDEVICEINSTANCEW *instance, DWORD version, BOOL enum_by_id, int index )
 {
     struct cache_entry *entry;
     HRESULT hr = DI_OK;
 
     EnterCriticalSection( &joystick_cache_cs );
 
-    LIST_FOR_EACH_ENTRY( entry, &joystick_cache, struct cache_entry, entry )
-        if (*entry->path && !index--) break;
-    if (&entry->entry == &joystick_cache) hr = DIERR_DEVICENOTREG;
+    if (enum_by_id)
+    {
+        LIST_FOR_EACH_ENTRY( entry, &joy_id_cache, struct cache_entry, entry_id )
+            if (*entry->path && !index--) break;
+        if (&entry->entry_id == &joy_id_cache) hr = DIERR_DEVICENOTREG;
+    }
     else
+    {
+        LIST_FOR_EACH_ENTRY( entry, &joystick_cache, struct cache_entry, entry )
+            if (*entry->path && !index--) break;
+        if (&entry->entry == &joystick_cache) hr = DIERR_DEVICENOTREG;
+    }
+
+    if (hr == DI_OK)
     {
         *instance = entry->instance;
         instance->dwDevType = device_type_for_version( instance->dwDevType, version ) | DIDEVTYPE_HID;

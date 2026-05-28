@@ -383,10 +383,17 @@ static HRESULT WINAPI dinput8_EnumDevices( IDirectInput8W *iface, DWORD type, LP
 
     if (device_class == DI8DEVCLASS_ALL || device_class == DI8DEVCLASS_GAMECTRL)
     {
+        const char *env = getenv( "WINE_DINPUT_ENUMDEVICES_BY_ID" );
+        BOOL enum_by_id = FALSE;
+        if (env)
+        {
+            enum_by_id = atoi(env) != 0;
+            TRACE( "WINE_DINPUT_ENUMDEVICES_BY_ID=%s.\n", enum_by_id ? "1" : "0" );
+        }
         hr = hid_joystick_refresh_devices();
         while (SUCCEEDED(hr))
         {
-            hr = hid_joystick_enum_device( type, flags, &instance, impl->dwVersion, i++ );
+            hr = hid_joystick_enum_device( type, flags, &instance, impl->dwVersion, enum_by_id, i++ );
             if (hr == DI_OK && try_enum_device( device_type, callback, &instance, context, flags ) == DIENUM_STOP)
                 return DI_OK;
         }
