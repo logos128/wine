@@ -833,8 +833,21 @@ static void create_computer_name_keys(void)
 
     if (gethostname( buffer, sizeof(buffer) )) return;
     hints.ai_flags = AI_CANONNAME;
-    if (getaddrinfo( buffer, NULL, &hints, &res ) != 0)
+    /* Depending on network settings, getaddrinfo() may block for more
+     * than 5sec. on both macOS and Linux, while trying to resolve
+     * hostnames from the .local domain via mDNS.
+     * On macOS it blocks when all sharing services are turned off, while
+     * on Linux when Avahi mdns/mdns_minimal is used and IPV6 is disabled.
+     * Since getaddrinfo() is used here to resolve the canonical name of
+     * the host, and it always returns the same .local hostname, just
+     * skip getaddrinfo() and use the original hostname for .local
+     * domains */
+    dot = strrchr( buffer, '.' );
+    if ((dot > buffer && strcasecmp( dot, ".local" ) == 0) ||
+        getaddrinfo( buffer, NULL, &hints, &res ) != 0)
+    {
         res = NULL;
+    }
     else if (res->ai_canonname && strcasecmp( res->ai_canonname, "localhost" ) != 0)
         name = res->ai_canonname;
     dot = strchr( name, '.' );
